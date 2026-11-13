@@ -1,0 +1,62 @@
+name: Publish clip mp4s
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "staging/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode staging files and publish release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/clips
+          python3 << 'PY'
+          import pathlib, base64, collections, re, sys
+          staging = pathlib.Path("staging")
+          out = pathlib.Path("/tmp/clips")
+          groups = collections.defaultdict(list)
+          if not staging.exists():
+              print("no staging dir")
+              sys.exit(0)
+          for p in staging.iterdir():
+              if not p.is_file():
+                  continue
+              m = re.match(r"(.+\.mp4)\.b64(?:\.part(\d+))?$", p.name)
+              if not m:
+                  print("skip", p.name)
+                  continue
+              stem, idx = m.group(1), m.group(2)
+              groups[stem].append((int(idx) if idx is not None else 0, p))
+          if not groups:
+              print("no b64 files")
+              sys.exit(0)
+          for stem, parts in groups.items():
+              parts.sort()
+              data = b"".join(pathlib.Path(p).read_bytes() for _, p in parts)
+              # allow whitespace/newlines in base64
+              raw = base64.b64decode(data)
+              dest = out / stem
+              dest.write_bytes(raw)
+              print(f"decoded {stem} ({len(raw)} bytes) from {len(parts)} part(s)")
+          PY
+          if ! ls /tmp/clips/*.mp4 >/dev/null 2>&1; then
+            echo "nothing to publish"
+            exit 0
+          fi
+          if ! gh release view clips >/dev/null 2>&1; then
+            gh release create clips --title "GTAIVHQ clips" --notes "Direct-download MP4s for Buffer TikTok posting."
+          fi
+          gh release upload clips /tmp/clips/*.mp4 --clobber
+          echo "Published:"
+          ls -lh /tmp/clips
